@@ -16,7 +16,7 @@ namespace qtfaststart
 
         private const int CHUNK_SIZE = 8192;
 
-        public IEnumerable<Atom> GetIndex(FileStream r)
+        public IEnumerable<Atom> GetIndex(Stream r)
         {
             Debug.Print("Getting index of top level atoms...");
 
@@ -26,7 +26,7 @@ namespace qtfaststart
             return index;
         }
 
-        private IEnumerable<Atom> ReadAtoms(FileStream r)
+        private IEnumerable<Atom> ReadAtoms(Stream r)
         {
             while (r.CanRead)
             {
@@ -108,152 +108,154 @@ namespace qtfaststart
             }
         }
 
-        public void Process(string inputFileName, string outputFileName, float limit = float.PositiveInfinity, bool toEnd = false, bool cleanup = true)
+        public void Process(string inputFileName, string outputFileName, float limit = float.PositiveInfinity,
+            bool toEnd = false, bool cleanup = true)
         {
-            using (var datastream = new FileStream(inputFileName, FileMode.Open))
+            using (var inputStream = new FileStream(inputFileName, FileMode.Open))
+            using (var outputStream = new FileStream(outputFileName, FileMode.Create))
             {
-                //Get the top level atom index
-                var index = GetIndex(datastream);
+                Process(inputStream, outputStream, limit, toEnd, cleanup);
+            }
 
-                long mdatPosition = 999999;
-                long freeSize = 0;
-
-                Atom moovAtom = new Atom { Name = "", Position = 0, Size = 0 };
-
-                //Make sure moov occurs AFTER mdat, otherwise no need to run!
-                foreach (var atom in index)
-                {
-                    //The atoms are guaranteed to exist from get_index above!
-                    if (atom.Name == "moov")
-                    {
-                        moovAtom = atom;
-                    }
-                    else if (atom.Name == "mdat")
-                    {
-                        mdatPosition = atom.Position;
-                    }
-                    else if (atom.Name == "free" && atom.Position < mdatPosition && cleanup)
-                    {
-                        //This free atom is before the mdat!
-                        freeSize += atom.Size;
-
-                        Debug.Print(string.Format("Removing free atom at {0} ({1} bytes)", atom.Position, atom.Size));
-                    }
-                    else if (atom.Name == "\x00\x00\x00\x00" && atom.Position < mdatPosition)
-                    {
-                        //This is some strange zero atom with incorrect size
-                        freeSize += 8;
-                        Debug.Print(string.Format("Removing strange zero atom at {0} (8 bytes)", atom.Position));
-                    }
-                }
-
-
-                //Offset to shift positions
-                long offset = -1 * freeSize;
-
-                if (moovAtom.Position < mdatPosition)
-                {
-                    if (toEnd)
-                    {
-                        //moov is in the wrong place, shift by moov size
-                        offset -= moovAtom.Size;
-                    }
-                }
-                else
-                {
-                    if (!toEnd)
-                    {
-                        //moov is in the wrong place, shift by moov size
-                        offset += moovAtom.Size;
-                    }
-                }
-
-
-                if (offset == 0)
-                {
-                    //No free atoms to process and moov is correct, we are done!
-                    var msg = "This file appears to already be setup!";
-                    Debug.Print(msg);
-                    return;
-                }
-
-                //Check for compressed moov atom
-                if (IsMoovCompressed(datastream, moovAtom))
-                {
-                    var msg = "Movies with compressed headers are not supported";
-                    Debug.Print(msg);
-                    throw new ArgumentException(msg);
-                }
-
-                //read and fix moov
-                var moov = PatchMoov(datastream, moovAtom, offset);
-
-                Debug.Print("Writing output...");
-                using (var outfile = new FileStream(outputFileName, FileMode.Create))
-                {
-
-                    //Write ftype
-                    foreach (var atom in index)
-                    {
-                        if (atom.Name == "ftyp")
-                        {
-                            Debug.Print(string.Format("Writing ftyp... ({0} bytes)", atom.Size));
-                            byte[] b = new byte[atom.Size];
-                            datastream.Seek(atom.Position, SeekOrigin.Begin);
-                            var read = datastream.Read(b, 0, atom.Size);
-                            outfile.Write(b, 0, read);
-                        }
-                    }
-
-                    if (!toEnd)
-                    {
-                        WriteMoov(moov, outfile);
-                    }
-                    //Write the rest
-                    var skipAtomTypes = new HashSet<string>() { "ftyp", "moov" };
-
-                    if (cleanup)
-                    {
-                        skipAtomTypes.Add("free");
-                    }
-
-                    var atoms = index.Where(x => !skipAtomTypes.Contains(x.Name));
-
-                    foreach (var atom in atoms)
-                    {
-                        Debug.Print(string.Format("Writing {0}... ({1} bytes)", atom.Name, atom.Size));
-                        datastream.Seek(atom.Position, SeekOrigin.Begin);
-
-                        //for compatability, allow '0' to mean no limit
-                        var curLimit = limit > 0 ? limit : float.PositiveInfinity;
-                        curLimit = Math.Min(curLimit, atom.Size);
-
-                        foreach (var chunk in GetChunks(datastream, CHUNK_SIZE, curLimit))
-                        {
-                            outfile.Write(chunk, 0, chunk.Length);
-                        }
-                    }
-                    if (toEnd)
-                    {
-                        WriteMoov(moov, outfile);
-                    }
-
-                    //Close and set permissions
-                    outfile.Close();
-                    try
-                    {
-                        File.SetAccessControl(outputFileName, File.GetAccessControl(inputFileName));
-                    }
-                    catch
-                    {
-                        Debug.Print(string.Format("Could not copy file permissions!"));
-                    }
-
-
-                }
+            try
+            {
+                File.SetAccessControl(outputFileName, File.GetAccessControl(inputFileName));
+            }
+            catch
+            {
+                Debug.Print(string.Format("Could not copy file permissions!"));
             }
         }
-        private void WriteMoov(MemoryStream moov, FileStream outfile)
+
+        public void Process(Stream datastream, Stream outputStream, float limit = float.PositiveInfinity,
+            bool toEnd = false, bool cleanup = true)
+        {
+            //Get the top level atom index
+            var index = GetIndex(datastream);
+
+            long mdatPosition = 999999;
+            long freeSize = 0;
+
+            Atom moovAtom = new Atom {Name = "", Position = 0, Size = 0};
+
+            //Make sure moov occurs AFTER mdat, otherwise no need to run!
+            foreach (var atom in index)
+            {
+                //The atoms are guaranteed to exist from get_index above!
+                if (atom.Name == "moov")
+                {
+                    moovAtom = atom;
+                }
+                else if (atom.Name == "mdat")
+                {
+                    mdatPosition = atom.Position;
+                }
+                else if (atom.Name == "free" && atom.Position < mdatPosition && cleanup)
+                {
+                    //This free atom is before the mdat!
+                    freeSize += atom.Size;
+
+                    Debug.Print(string.Format("Removing free atom at {0} ({1} bytes)", atom.Position, atom.Size));
+                }
+                else if (atom.Name == "\x00\x00\x00\x00" && atom.Position < mdatPosition)
+                {
+                    //This is some strange zero atom with incorrect size
+                    freeSize += 8;
+                    Debug.Print(string.Format("Removing strange zero atom at {0} (8 bytes)", atom.Position));
+                }
+            }
+
+
+            //Offset to shift positions
+            long offset = -1*freeSize;
+
+            if (moovAtom.Position < mdatPosition)
+            {
+                if (toEnd)
+                {
+                    //moov is in the wrong place, shift by moov size
+                    offset -= moovAtom.Size;
+                }
+            }
+            else
+            {
+                if (!toEnd)
+                {
+                    //moov is in the wrong place, shift by moov size
+                    offset += moovAtom.Size;
+                }
+            }
+
+
+            if (offset == 0)
+            {
+                //No free atoms to process and moov is correct, we are done!
+                var msg = "This file appears to already be setup!";
+                Debug.Print(msg);
+                return;
+            }
+
+            //Check for compressed moov atom
+            if (IsMoovCompressed(datastream, moovAtom))
+            {
+                var msg = "Movies with compressed headers are not supported";
+                Debug.Print(msg);
+                throw new ArgumentException(msg);
+            }
+
+            //read and fix moov
+            var moov = PatchMoov(datastream, moovAtom, offset);
+
+            Debug.Print("Writing output...");
+            //Write ftype
+            foreach (var atom in index)
+            {
+                if (atom.Name == "ftyp")
+                {
+                    Debug.Print(string.Format("Writing ftyp... ({0} bytes)", atom.Size));
+                    byte[] b = new byte[atom.Size];
+                    datastream.Seek(atom.Position, SeekOrigin.Begin);
+                    var read = datastream.Read(b, 0, atom.Size);
+                    outputStream.Write(b, 0, read);
+                }
+            }
+
+            if (!toEnd)
+            {
+                WriteMoov(moov, outputStream);
+            }
+            //Write the rest
+            var skipAtomTypes = new HashSet<string>() {"ftyp", "moov"};
+
+            if (cleanup)
+            {
+                skipAtomTypes.Add("free");
+            }
+
+            var atoms = index.Where(x => !skipAtomTypes.Contains(x.Name));
+
+            foreach (var atom in atoms)
+            {
+                Debug.Print(string.Format("Writing {0}... ({1} bytes)", atom.Name, atom.Size));
+                datastream.Seek(atom.Position, SeekOrigin.Begin);
+
+                //for compatability, allow '0' to mean no limit
+                var curLimit = limit > 0 ? limit : float.PositiveInfinity;
+                curLimit = Math.Min(curLimit, atom.Size);
+
+                foreach (var chunk in GetChunks(datastream, CHUNK_SIZE, curLimit))
+                {
+                    outputStream.Write(chunk, 0, chunk.Length);
+                }
+            }
+            if (toEnd)
+            {
+                WriteMoov(moov, outputStream);
+            }
+        }
+
+
+        private void WriteMoov(MemoryStream moov, Stream outfile)
         {
             moov.Seek(0, SeekOrigin.Begin);
             byte[] bytes = new byte[1024];
@@ -305,7 +307,7 @@ namespace qtfaststart
         }
 
 
-        private MemoryStream PatchMoov(FileStream datastream, Atom moovAtom, long offset)
+        private MemoryStream PatchMoov(Stream datastream, Atom moovAtom, long offset)
         {
             datastream.Seek(moovAtom.Position, SeekOrigin.Begin);
             var moov = new MemoryStream(ReadBytes(datastream, moovAtom.Size));
@@ -357,7 +359,7 @@ namespace qtfaststart
             }
         }
 
-        private bool IsMoovCompressed(FileStream datastream, Atom moovAtom)
+        private bool IsMoovCompressed(Stream datastream, Atom moovAtom)
         {
             datastream.Seek(moovAtom.Position + 8, SeekOrigin.Begin);
             var stop = moovAtom.Position + moovAtom.Size;
@@ -376,7 +378,7 @@ namespace qtfaststart
             return false;
         }
 
-        public IEnumerable<Byte[]> GetChunks(FileStream stream, long chunkSize, float limit)
+        public IEnumerable<Byte[]> GetChunks(Stream stream, long chunkSize, float limit)
         {
             var remaining = limit;
 
