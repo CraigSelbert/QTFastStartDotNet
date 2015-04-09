@@ -103,7 +103,7 @@ namespace qtfaststart
                 {
                     var msg = string.Format("{0} atom not found, is this a valid MOV/MP4 file?", r);
                     Debug.Print(msg);
-                    throw new InvalidDataException(msg);
+                    throw new InvalidFormatException(msg);
                 }
             }
         }
@@ -127,11 +127,19 @@ namespace qtfaststart
             }
         }
 
-        public void Process(Stream datastream, Stream outputStream, float limit = float.PositiveInfinity,
+        public QTFastStartProcessingStatus Process(Stream datastream, Stream outputStream, float limit = float.PositiveInfinity,
             bool toEnd = false, bool cleanup = true)
         {
             //Get the top level atom index
-            var index = GetIndex(datastream);
+            IEnumerable<Atom> index;
+            try
+            {
+                index = GetIndex(datastream);
+            }
+            catch (InvalidFormatException)
+            {
+                return QTFastStartProcessingStatus.InvalidFormat;
+            }
 
             long mdatPosition = 999999;
             long freeSize = 0;
@@ -192,7 +200,7 @@ namespace qtfaststart
                 //No free atoms to process and moov is correct, we are done!
                 var msg = "This file appears to already be setup!";
                 Debug.Print(msg);
-                return;
+                return QTFastStartProcessingStatus.AlreadyConverted;
             }
 
             //Check for compressed moov atom
@@ -200,7 +208,7 @@ namespace qtfaststart
             {
                 var msg = "Movies with compressed headers are not supported";
                 Debug.Print(msg);
-                throw new ArgumentException(msg);
+                return QTFastStartProcessingStatus.FileIsCompressed;
             }
 
             //read and fix moov
@@ -252,6 +260,8 @@ namespace qtfaststart
             {
                 WriteMoov(moov, outputStream);
             }
+
+            return QTFastStartProcessingStatus.Success;
         }
 
 
@@ -284,7 +294,7 @@ namespace qtfaststart
                 {
                     var msg = "Error reading next atom";
                     Debug.Print(msg);
-                    throw new InvalidDataException(msg);
+                    throw new AtomReadingException(msg);
                 }
 
                 if (ancestors.Contains(atom.Name))
