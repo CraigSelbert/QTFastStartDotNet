@@ -1,5 +1,5 @@
 ﻿
-namespace qtfaststart
+namespace QTFastStartDotNet
 {
     public struct Atom
     {

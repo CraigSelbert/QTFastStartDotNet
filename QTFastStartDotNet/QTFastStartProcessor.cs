@@ -7,7 +7,7 @@ using System.IO;
 using MiscUtil.IO;
 using MiscUtil.Conversion;
 
-namespace qtfaststart
+namespace QTFastStartDotNet
 {
     public class QTFastStartProcessor
     {
